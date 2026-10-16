@@ -73,7 +73,7 @@ class DigiKey(Supplier):
         else:
             product_variation = sorted(
                 product_details["ProductVariations"],
-                key=lambda variation: variation["MinimumOrderQuantity"],
+                key=lambda variation: variation.get("MinimumOrderQuantity",float('inf')),
             )[0]
 
         category_path: list[str] = []

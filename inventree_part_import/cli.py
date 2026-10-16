@@ -300,19 +300,52 @@ def inventree_part_import(
 
 
 def load_tabular_data(path: Path):
+    import csv
+
     info(f"reading {path.name} ...")
-    with path.open(encoding="utf-8") as file:
-        try:
-            data = tablib.import_set(file)
-        except UnsupportedFormat:
-            # try to import the file as a single column csv file
-            if column := load_single_column_csv(path):
-                return column
-            error(f"{path.suffix} is not a supported file format")
-            return None
-        except TablibException as e:
-            error(f"failed to parse file with '{e.__doc__}'")
-            return None
+
+    try:
+        if path.suffix.lower() == ".csv":
+            with path.open(encoding="utf-8-sig", newline="") as file:
+                sample = file.read(8192)
+                file.seek(0)
+
+                try:
+                    dialect = csv.Sniffer().sniff(
+                        sample,
+                        delimiters=",;",
+                    )
+                    delimiter = dialect.delimiter
+                except csv.Error:
+                    delimiter = ","
+
+                rows = list(csv.reader(file, delimiter=delimiter))
+
+            data = tablib.Dataset()
+            if rows:
+                data.headers = rows[0]
+                for row in rows[1:]:
+                    data.append(row)
+        else:
+            data = tablib.import_set(
+                path.read_bytes(),
+                format=path.suffix.lstrip(".").lower(),
+            )
+
+    except UnsupportedFormat:
+        if column := load_single_column_csv(path):
+            return column
+
+        error(f"{path.suffix} is not a supported file format")
+        return None
+
+    except (TablibException, UnicodeDecodeError, ValueError) as e:
+        error(f"failed to parse file: {e}")
+        return None
+
+    if data.headers is None:
+        error("file has no header row")
+        return None
 
     mpn_headers = get_config().get(
         "auto_detect_columns", ["Manufacturer Part Number", "MPN", "part_id"]
@@ -323,23 +356,35 @@ def load_tabular_data(path: Path):
         for i, header in enumerate(cast(list[str], data.headers))
         if (stripped := header.strip())
     }
+
     sorted_headers = sorted(
         headers,
-        key=lambda header: max(fuzz.partial_ratio(header, mpn) for mpn in mpn_headers),
+        key=lambda header: max(
+            fuzz.partial_ratio(header, mpn) for mpn in mpn_headers
+        ),
         reverse=True,
     )
 
     if len(sorted_headers) == 0:
         column_index = 0
-    elif sorted_headers[0] in mpn_headers and sorted_headers[1] not in mpn_headers:
+    elif (
+        sorted_headers[0] in mpn_headers
+        and (
+            len(sorted_headers) == 1
+            or sorted_headers[1] not in mpn_headers
+        )
+    ):
         column_index = headers[sorted_headers[0]]
     else:
         prompt("select the column to import")
-        index = select(sorted_headers, deselected_prefix="  ", selected_prefix="> ")
+        index = select(
+            sorted_headers,
+            deselected_prefix="  ",
+            selected_prefix="> ",
+        )
         column_index = headers[sorted_headers[index]]
 
     return cast(list[str], data.get_col(column_index))
-
 
 def load_single_column_csv(path: Path):
     if path.suffix not in {".csv", ".txt", ""}:
